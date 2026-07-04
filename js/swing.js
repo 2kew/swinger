@@ -109,6 +109,50 @@ export function bandScore(v, ideal0, ideal1, accept0, accept1) {
   return Math.round(clamp(60 - 30 * (d - 1), 5, 60));
 }
 
+// Split a long "driving range" recording into per-swing frame windows.
+// Each downswing produces a dominant hand-speed peak; walking, waggles and
+// setup movement sit far below it. Returns an array of frame slices (with
+// original timestamps preserved) — one per detected swing.
+export function segmentSwings(rawFrames) {
+  const valid = rawFrames.filter(frameVisible);
+  if (valid.length < 20) return [];
+
+  const hx = smooth(valid.map((f) => mid(f.lm[LM.lWrist], f.lm[LM.rWrist]).x), 3);
+  const hy = smooth(valid.map((f) => mid(f.lm[LM.lWrist], f.lm[LM.rWrist]).y), 3);
+  const t = valid.map((f) => f.t);
+  const speed = valid.map((_, i) => {
+    if (i === 0) return 0;
+    return Math.hypot(hx[i] - hx[i - 1], hy[i] - hy[i - 1]) / Math.max(1e-3, t[i] - t[i - 1]);
+  });
+  const sp = smooth(speed, 3);
+  const p99 = percentile(sp, 0.99);
+  if (p99 < 0.15) return [];
+  const peakThresh = Math.max(0.25, 0.35 * p99);
+
+  // Local maxima above threshold; peaks closer than 1.8s are one swing
+  // (the backswing produces a smaller peak before the downswing's).
+  const peaks = [];
+  for (let i = 1; i < sp.length - 1; i++) {
+    if (sp[i] < peakThresh || sp[i] < sp[i - 1] || sp[i] < sp[i + 1]) continue;
+    const last = peaks[peaks.length - 1];
+    if (last != null && t[i] - t[last] < 1.8) {
+      if (sp[i] > sp[last]) peaks[peaks.length - 1] = i;
+    } else {
+      peaks.push(i);
+    }
+  }
+
+  return peaks.map((p, k) => {
+    // Window: enough lead-in to catch address, enough tail for the finish,
+    // clamped to the midpoint between neighboring swings.
+    let t0 = t[p] - 3.2;
+    let t1 = t[p] + 2.2;
+    if (k > 0) t0 = Math.max(t0, (t[peaks[k - 1]] + t[p]) / 2);
+    if (k < peaks.length - 1) t1 = Math.min(t1, (t[p] + t[peaks[k + 1]]) / 2);
+    return rawFrames.filter((f) => f.t >= t0 && f.t <= t1);
+  }).filter((slice) => slice.length >= 20);
+}
+
 export function analyzeSwing(rawFrames, opts = {}) {
   const handedness = opts.handedness === 'left' ? 'left' : 'right';
   const view = opts.view === 'dtl' ? 'dtl' : 'face-on';

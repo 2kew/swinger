@@ -55,11 +55,24 @@ function persist(sessions) {
   }
 }
 
+const SETTINGS_DEFAULTS = {
+  handedness: 'right',
+  view: 'face-on',
+  facing: 'user',   // front camera: set the phone down and see yourself
+  mode: 'single',   // 'single' | 'range'
+  v: 2,
+};
+
 export function loadSettings() {
   try {
-    return { handedness: 'right', view: 'face-on', facing: 'environment', ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    const s = { ...SETTINGS_DEFAULTS, ...saved };
+    // v1 settings silently persisted facing:'environment' whether or not the
+    // user ever chose it — reset to the new front-camera default once.
+    if (!saved.v) { s.facing = 'user'; s.v = 2; }
+    return s;
   } catch {
-    return { handedness: 'right', view: 'face-on', facing: 'environment' };
+    return { ...SETTINGS_DEFAULTS };
   }
 }
 

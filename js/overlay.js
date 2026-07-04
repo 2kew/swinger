@@ -9,11 +9,14 @@ export const FAULT_COLOR = '#ff5252';
 
 const scaleFor = (W) => Math.max(1, W / 640);
 
-export function drawSkeleton(ctx, lm, W, H) {
+export function drawSkeleton(ctx, lm, W, H, opts = {}) {
   const s = scaleFor(W);
+  const line = opts.line || 'rgba(255,255,255,0.85)';
+  const joint = opts.joint || 'rgba(255,255,255,0.95)';
   ctx.lineCap = 'round';
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth = 2.5 * s;
+  ctx.strokeStyle = line;
+  ctx.lineWidth = (opts.width || 2.5) * s;
+  if (opts.dash) ctx.setLineDash([6 * s, 4 * s]);
   for (const [i, j] of CONNECTIONS) {
     const p = lm[i], q = lm[j];
     if ((p.visibility ?? 1) < 0.4 || (q.visibility ?? 1) < 0.4) continue;
@@ -22,7 +25,8 @@ export function drawSkeleton(ctx, lm, W, H) {
     ctx.lineTo(q.x * W, q.y * H);
     ctx.stroke();
   }
-  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.setLineDash([]);
+  ctx.fillStyle = joint;
   for (const [i, j] of CONNECTIONS) {
     for (const idx of [i, j]) {
       const p = lm[idx];
@@ -32,6 +36,16 @@ export function drawSkeleton(ctx, lm, W, H) {
       ctx.fill();
     }
   }
+}
+
+// The full corrected pose, drawn as a dashed green skeleton.
+export function drawGhostSkeleton(ctx, lm, W, H) {
+  drawSkeleton(ctx, lm, W, H, {
+    line: 'rgba(61,220,132,0.9)',
+    joint: 'rgba(61,220,132,0.95)',
+    dash: true,
+    width: 3,
+  });
 }
 
 // trajectory: [{x, y, seg}] already filtered to the current time.

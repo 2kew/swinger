@@ -23,6 +23,11 @@
     <!-- ============ SWING (capture) ============ -->
     <section id="panel-record" class="tab-panel active">
       <div class="card">
+        <div class="mode-toggle" id="mode-toggle">
+          <button data-mode="single">Single swing</button>
+          <button data-mode="range">Driving range</button>
+        </div>
+        <p class="fine mode-hint" id="mode-hint"></p>
         <div class="select-row">
           <label>I swing
             <select id="set-handedness">
@@ -101,7 +106,7 @@
             <span><i style="background:var(--s8)"></i>Downswing</span>
             <span><i style="background:var(--s2)"></i>Follow-through</span>
             <span><i style="background:#ff5252"></i>Fault</span>
-            <span><i class="dash"></i>Corrected position</span>
+            <span><i class="dash"></i>Corrected (green ghost)</span>
           </div>
           <input type="range" class="scrub" id="scrub" min="0" max="1000" value="0" />
           <div class="phase-chips" id="phase-chips">
@@ -141,10 +146,15 @@
       <div class="empty-state" id="coach-empty">
         <p>Coaching appears here after you analyze a swing.</p>
       </div>
+      <div class="card" id="hit-list-card" hidden>
+        <h2>Your hits</h2>
+        <div id="hit-list"></div>
+      </div>
       <div id="coach-content" hidden>
         <div class="card">
-          <h2>Coach's read</h2>
+          <h2 id="coach-title">Coach's read</h2>
           <p class="coach-summary" id="coach-summary"></p>
+          <button class="link-btn" id="btn-replay">Watch the replay with corrections →</button>
         </div>
         <div class="card">
           <h2>Lesson plan</h2>

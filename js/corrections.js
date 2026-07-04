@@ -48,6 +48,7 @@ export function buildCorrections(analysis) {
     const elbow2 = add(S, mul(d, upper));
     const wrist2 = add(S, mul(d, upper + fore));
     out.push({
+      kind: 'arm',
       t: phases.top.t,
       label: 'Straighten lead arm',
       anchor: wrist2,
@@ -66,6 +67,7 @@ export function buildCorrections(analysis) {
       .sort((a, b) => dist(b.nose, target) - dist(a.nose, target))[0];
     if (dist(at.nose, target) > 0.015) {
       out.push({
+        kind: 'head',
         t: phases[at.p].t,
         label: 'Keep your head here',
         anchor: { x: target.x, y: target.y - 0.35 * torsoLen },
@@ -89,6 +91,7 @@ export function buildCorrections(analysis) {
     const target = { x: hip.x + Math.cos(angA) * len, y: hip.y + Math.sin(angA) * len };
     if (dist(sho, target) > 0.02) {
       out.push({
+        kind: 'spine',
         t: phases.impact.t,
         label: 'Hold your spine angle',
         anchor: target,
@@ -109,6 +112,7 @@ export function buildCorrections(analysis) {
     const hangingBack = metrics.weightShift < 0.08;
     if (Math.abs(target.x - hipI.x) > 0.012) {
       out.push({
+        kind: 'hips',
         t: phases.impact.t,
         label: hangingBack ? 'Shift hips toward target' : "Post up — don't slide",
         anchor: { x: target.x, y: target.y - 0.55 * torsoLen },
@@ -120,4 +124,69 @@ export function buildCorrections(analysis) {
   }
 
   return out;
+}
+
+// Build a full corrected "ghost" pose for each moment that has corrections:
+// the actual frame's landmarks with the fixes applied (hips shifted, spine
+// re-tilted, lead arm straightened), so the overlay can draw a complete
+// green skeleton showing the improved position.
+export function buildGhosts(analysis, corrections) {
+  const { frames, phases, handedness } = analysis;
+  if (!frames?.length || !corrections?.length) return [];
+
+  const left = handedness === 'left';
+  const lead = left ? { el: LM.rElbow, wr: LM.rWrist } : { el: LM.lElbow, wr: LM.lWrist };
+  const ARMS = [LM.lElbow, LM.rElbow, LM.lWrist, LM.rWrist];
+
+  const byTime = new Map();
+  for (const c of corrections) {
+    if (!byTime.has(c.t)) byTime.set(c.t, []);
+    byTime.get(c.t).push(c);
+  }
+
+  const ghosts = [];
+  for (const [t, list] of byTime) {
+    // The ghost pose only differs for body-position fixes.
+    if (!list.some((c) => c.kind === 'arm' || c.kind === 'spine' || c.kind === 'hips')) continue;
+    const phase = Object.values(phases).find((p) => p.t === t);
+    if (phase?.idx == null) continue;
+    const lm = frames[phase.idx].lm.map((p) => ({ ...p }));
+
+    for (const c of list) {
+      if (c.kind === 'hips') {
+        // Post onto the lead side: hips fully to the target, torso follows.
+        const dx = c.arrows[0].to.x - c.arrows[0].from.x;
+        for (const i of [LM.lHip, LM.rHip]) lm[i].x += dx;
+        for (const i of [LM.lShoulder, LM.rShoulder, ...ARMS]) lm[i].x += dx * 0.5;
+      }
+      if (c.kind === 'spine') {
+        // Rotate the shoulders about the hip center back to the address tilt.
+        const hip = mid(lm[LM.lHip], lm[LM.rHip]);
+        const sho = mid(lm[LM.lShoulder], lm[LM.rShoulder]);
+        const target = c.arrows[0].to;
+        const delta = Math.atan2(target.y - hip.y, target.x - hip.x)
+          - Math.atan2(sho.y - hip.y, sho.x - hip.x);
+        const cos = Math.cos(delta), sin = Math.sin(delta);
+        for (const i of [LM.lShoulder, LM.rShoulder]) {
+          const before = { ...lm[i] };
+          const vx = lm[i].x - hip.x, vy = lm[i].y - hip.y;
+          lm[i].x = hip.x + vx * cos - vy * sin;
+          lm[i].y = hip.y + vx * sin + vy * cos;
+          // Arms hang from the shoulders — carry them along.
+          const armIdx = i === LM.lShoulder ? [LM.lElbow, LM.lWrist] : [LM.rElbow, LM.rWrist];
+          for (const j of armIdx) {
+            lm[j].x += lm[i].x - before.x;
+            lm[j].y += lm[i].y - before.y;
+          }
+        }
+      }
+      if (c.kind === 'arm') {
+        // lines = [[shoulder, elbow2], [elbow2, wrist2]] in corrected space.
+        lm[lead.el] = { ...lm[lead.el], ...c.lines[0][1] };
+        lm[lead.wr] = { ...lm[lead.wr], ...c.lines[1][1] };
+      }
+    }
+    ghosts.push({ t, lm });
+  }
+  return ghosts;
 }

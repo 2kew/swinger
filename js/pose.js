@@ -78,7 +78,7 @@ export async function extractFrames(video, onProgress, opts = {}) {
       lm: res.landmarks?.[0] || null,
       wlm: res.worldLandmarks?.[0] || null,
     });
-    if (onProgress && i % 3 === 0) onProgress(i / total, `Analyzing swing… ${Math.round((i / total) * 100)}%`);
+    if (onProgress && i % 3 === 0) onProgress(i / total, `Scanning video… ${Math.round((i / total) * 100)}%`);
   }
   onProgress?.(1, 'Crunching the numbers…');
   return frames;

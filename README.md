@@ -6,12 +6,18 @@ backend, no video upload — then coaches you like a pro would.
 
 ## What it does
 
-- **Record or upload** a swing with the phone camera (face-on or down-the-line).
+- **Record or upload** swings with the phone camera (front camera by default —
+  set the phone down and see yourself; flip to the rear camera anytime).
+- **Driving range mode** — set the phone down, record up to ~10 hits in one
+  take, and every swing is found and scored automatically. Each hit gets its
+  own replay, scores, and coaching, listed under the Coach tab.
 - **On-device pose analysis** — [MediaPipe Pose](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker)
   runs in the browser and tracks 33 body landmarks frame by frame.
-- **Swing replay** with a skeleton overlay and the hand trajectory drawn over
-  the video, color-coded by phase (backswing / downswing / follow-through),
-  with one-tap jumps to Address, Top, Impact and Finish.
+- **Swing replay** with a wire-mesh skeleton overlay and the hand trajectory
+  drawn over the video, color-coded by phase, with one-tap jumps to Address,
+  Top, Impact and Finish. Detected faults are tinted red, and a dashed **green
+  ghost skeleton** shows the corrected body position (straightened lead arm,
+  held spine angle, posted hips) — toggle it with the Fixes button.
 - **8 biomechanics metrics**, each scored 0–100:
 
   | Metric | What's measured | Ideal |
