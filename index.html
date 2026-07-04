@@ -53,14 +53,14 @@
 
         <div class="btn-row">
           <button class="btn primary" id="btn-record">● Record</button>
-          <button class="btn" id="btn-upload">Upload video</button>
-          <input type="file" id="file-input" accept="video/*" hidden />
+          <button class="btn" id="btn-upload">Upload videos</button>
+          <input type="file" id="file-input" accept="video/*" multiple hidden />
         </div>
+      </div>
 
-        <div class="progress-wrap" id="progress-wrap">
-          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
-          <div class="progress-label" id="progress-label">Preparing…</div>
-        </div>
+      <div class="card" id="clips-card" hidden>
+        <h2>Your clips</h2>
+        <div id="clip-list"></div>
       </div>
 
       <div class="card error-card" id="error-card" hidden>
@@ -89,6 +89,7 @@
       </div>
 
       <div id="analysis-content" hidden>
+        <div class="metric-chips" id="clip-chips" hidden></div>
         <div class="card" id="playback-card">
           <h2>Swing replay <span class="badge" id="view-badge"></span></h2>
           <div class="video-shell landscape" id="play-shell">

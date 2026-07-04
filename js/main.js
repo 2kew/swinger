@@ -13,11 +13,10 @@ const state = {
   recorder: null,
   recChunks: [],
   recTimer: null,
-  busy: false,
-  analysis: null,     // current analysis (with frames) — in-memory only
-  videoUrl: null,
-  coaching: null,
-  isDemo: false,
+  clips: [],          // [{id, name, url, status, progress, label, analysis, coaching, …}]
+  clipCounter: 0,
+  activeClipId: null, // clip shown in Analysis/Coach tabs
+  queueRunning: false,
   trendMetric: 'overall',
   showFixes: true,
 };
@@ -30,6 +29,12 @@ const RADAR_LABELS = {
 const LEVEL_COLORS = {
   good: 'var(--status-good)', warning: 'var(--status-warning)',
   serious: 'var(--status-serious)', critical: 'var(--status-critical)', muted: 'var(--muted)',
+};
+
+const getClip = (id) => state.clips.find((c) => c.id === id);
+const activeClip = () => {
+  const c = getClip(state.activeClipId);
+  return c && c.status === 'done' ? c : null;
 };
 
 // ---------------- Tabs ----------------
@@ -112,6 +117,13 @@ function startLiveSkeleton() {
   const loop = async (ts) => {
     liveRaf = requestAnimationFrame(loop);
     if (!state.stream || liveDisabled || liveBusy || camVideo.readyState < 2) return;
+    // The pose detector is busy while clips are being analyzed — pause the
+    // preview skeleton rather than interleave two sources.
+    if (state.queueRunning) {
+      camOverlay.getContext('2d').clearRect(0, 0, camOverlay.width, camOverlay.height);
+      seqStarted = false;
+      return;
+    }
     if (ts - lastLiveTs < 66) return; // ~15fps is plenty for framing feedback
     lastLiveTs = ts;
     liveBusy = true;
@@ -153,7 +165,6 @@ function pickMimeType() {
 }
 
 $('btn-record').addEventListener('click', async () => {
-  if (state.busy) return;
   hideError();
   if (state.recorder && state.recorder.state === 'recording') {
     state.recorder.stop();
@@ -169,7 +180,10 @@ $('btn-record').addEventListener('click', async () => {
       setRecordingUI(false);
       stopCamera();
       const blob = new Blob(state.recChunks, { type: state.recorder.mimeType || 'video/webm' });
-      if (blob.size > 0) analyzeBlob(blob);
+      if (blob.size > 0) {
+        // Recorded clips go to review — the golfer decides to analyze or discard.
+        createClip(blob, 'review');
+      }
     };
     state.recorder.start();
     setRecordingUI(true);
@@ -205,55 +219,194 @@ function setRecordingUI(on) {
 
 $('btn-upload').addEventListener('click', () => $('file-input').click());
 $('file-input').addEventListener('change', (e) => {
-  const file = e.target.files[0];
+  const files = [...e.target.files];
   e.target.value = '';
-  if (file) { hideError(); analyzeBlob(file); }
+  hideError();
+  // Uploaded files were already deliberately picked — queue them directly.
+  for (const f of files) createClip(f, 'queued');
+  pumpQueue();
 });
 
-// ---------------- Analysis pipeline ----------------
+// ---------------- Clips ----------------
 
-async function analyzeBlob(blob) {
-  if (state.busy) return;
-  stopCamera(); // the analysis loop and live preview can't share the detector
-  state.busy = true;
-  setProgress(0, 'Loading video…');
-  $('progress-wrap').classList.add('on');
+function createClip(blob, status) {
+  const clip = {
+    id: `c${++state.clipCounter}`,
+    name: `Swing ${state.clipCounter}`,
+    time: new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+    url: URL.createObjectURL(blob),
+    settings: { ...state.settings },
+    status,               // review | queued | analyzing | done | error
+    progress: 0,
+    label: status === 'queued' ? 'Waiting…' : '',
+    analysis: null,
+    coaching: null,
+    prevOverall: null,
+    error: null,
+    cancelled: false,
+  };
+  state.clips.push(clip);
+  renderClips();
+  return clip;
+}
 
-  const url = URL.createObjectURL(blob);
-  const proc = $('proc-video');
+function removeClip(id) {
+  const clip = getClip(id);
+  if (!clip) return;
+  clip.cancelled = true; // aborts the job if it's mid-analysis
+  if (clip.url) URL.revokeObjectURL(clip.url);
+  state.clips = state.clips.filter((c) => c.id !== id);
+  if (state.activeClipId === id) {
+    state.activeClipId = null;
+    const latestDone = [...state.clips].reverse().find((c) => c.status === 'done');
+    if (latestDone) state.activeClipId = latestDone.id;
+    renderAnalysis();
+    renderCoach();
+  }
+  renderClips();
+}
 
+const CLIP_STATUS_TEXT = {
+  review: 'Ready to review',
+  queued: 'Queued',
+  analyzing: 'Analyzing…',
+  done: 'Analyzed',
+  error: 'Failed',
+};
+
+function renderClips() {
+  const list = $('clip-list');
+  $('clips-card').hidden = state.clips.length === 0;
+  list.innerHTML = state.clips.map((c) => {
+    const statusText = c.status === 'done' && c.analysis
+      ? `Score ${c.analysis.overall}`
+      : c.status === 'analyzing' ? (c.label || 'Analyzing…')
+      : CLIP_STATUS_TEXT[c.status];
+    const actions = {
+      review: `<button class="btn primary" data-act="analyze">Analyze</button>
+               <button class="btn" data-act="discard">Discard</button>`,
+      queued: `<button class="btn" data-act="discard">Cancel</button>`,
+      analyzing: `<button class="btn" data-act="discard">Cancel</button>`,
+      done: `<button class="btn primary" data-act="view">View analysis</button>
+             <button class="btn" data-act="discard">Remove</button>`,
+      error: `<button class="btn primary" data-act="retry">Retry</button>
+              <button class="btn" data-act="discard">Remove</button>`,
+    }[c.status];
+    return `
+      <div class="clip-row" data-id="${c.id}">
+        <div class="clip-head">
+          <span class="clip-name">${c.name} <span class="badge">${c.settings.view === 'dtl' ? 'DTL' : 'face-on'}</span>
+            <span class="fine clip-time">${c.time}</span></span>
+          <span class="clip-status ${c.status}">${statusText}</span>
+        </div>
+        ${c.status === 'review' && c.url ? `<video class="clip-preview" src="${c.url}" controls muted playsinline></video>` : ''}
+        ${c.status === 'queued' || c.status === 'analyzing' ? `
+          <div class="progress-track"><div class="progress-fill" style="width:${Math.round(c.progress * 100)}%"></div></div>` : ''}
+        ${c.status === 'error' ? `<div class="clip-err">${c.error || 'Analysis failed.'}</div>` : ''}
+        <div class="clip-actions">${actions}</div>
+      </div>`;
+  }).join('');
+  renderClipChips(); // keep the Analysis-tab switcher in sync
+}
+
+// Patch progress in place so review previews don't reload on every tick.
+function updateClipProgress(clip) {
+  const row = $('clip-list').querySelector(`[data-id="${clip.id}"]`);
+  if (!row) return;
+  const fill = row.querySelector('.progress-fill');
+  if (fill) fill.style.width = `${Math.round(clip.progress * 100)}%`;
+  const status = row.querySelector('.clip-status');
+  if (status && clip.status === 'analyzing') status.textContent = clip.label || 'Analyzing…';
+}
+
+$('clip-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.closest('.clip-row').dataset.id;
+  const clip = getClip(id);
+  if (!clip) return;
+  switch (btn.dataset.act) {
+    case 'analyze':
+    case 'retry':
+      clip.status = 'queued';
+      clip.error = null;
+      clip.cancelled = false;
+      clip.progress = 0;
+      clip.label = 'Waiting…';
+      renderClips();
+      pumpQueue();
+      break;
+    case 'discard':
+      removeClip(id);
+      break;
+    case 'view':
+      selectClip(id);
+      showTab('analysis');
+      break;
+  }
+});
+
+// ---------------- Analysis queue ----------------
+
+// One clip at a time — the pose detector is a single shared resource — but
+// the UI stays live: record or queue more clips while this runs.
+async function pumpQueue() {
+  if (state.queueRunning) return;
+  state.queueRunning = true;
   try {
-    await loadVideo(proc, url);
+    for (;;) {
+      const clip = state.clips.find((c) => c.status === 'queued' && !c.cancelled);
+      if (!clip) break;
+      clip.status = 'analyzing';
+      clip.label = 'Loading video…';
+      renderClips();
+      try {
+        await runAnalysisJob(clip);
+        clip.status = 'done';
+        // Auto-select the fresh result unless the golfer is studying another clip.
+        if (!activeClip()) selectClip(clip.id);
+      } catch (err) {
+        if (clip.cancelled || !getClip(clip.id)) continue; // removed mid-flight
+        clip.status = 'error';
+        clip.error = err.friendly ||
+          'Something went wrong while analyzing. Check your connection (the pose model downloads on first use) and try again.';
+        console.warn('Clip analysis failed:', err);
+      }
+      renderClips();
+    }
+  } finally {
+    state.queueRunning = false;
+  }
+}
+
+async function runAnalysisJob(clip) {
+  const proc = $('proc-video');
+  try {
+    await loadVideo(proc, clip.url);
     if ((proc.duration || 0) > 60) {
       throw Object.assign(new Error('too-long'), { friendly: 'That video is over a minute long. Trim it to one swing (a few seconds) and try again.' });
     }
     const { extractFrames } = await import('./pose.js');
-    const frames = await extractFrames(proc, setProgress);
-    setProgress(1, 'Scoring your swing…');
-    const analysis = analyzeSwing(frames, state.settings);
+    const frames = await extractFrames(proc, (frac, label) => {
+      if (clip.cancelled) throw Object.assign(new Error('cancelled'), { friendly: 'Cancelled.' });
+      clip.progress = frac;
+      clip.label = label;
+      updateClipProgress(clip);
+    });
+    clip.label = 'Scoring your swing…';
+    updateClipProgress(clip);
+    const analysis = analyzeSwing(frames, clip.settings);
     if (analysis.error) {
       throw Object.assign(new Error(analysis.error), { friendly: friendlyAnalysisError(analysis) });
     }
-
-    if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
-    state.videoUrl = url;
-    state.analysis = analysis;
     analysis.corrections = buildCorrections(analysis);
-    state.coaching = buildCoaching(analysis);
-    state.isDemo = false;
+    clip.analysis = analysis;
+    clip.coaching = buildCoaching(analysis);
+    const sessions = store.listSessions();
+    clip.prevOverall = sessions.length ? sessions[sessions.length - 1].overall : null;
     store.saveSession(analysis);
-    renderAnalysis();
-    renderCoach();
-    showTab('analysis');
-  } catch (err) {
-    URL.revokeObjectURL(url);
-    showError('Analysis failed', err.friendly ||
-      'Something went wrong while analyzing. Check your connection (the pose model downloads on first use) and try again.');
-    console.error(err);
   } finally {
     proc.removeAttribute('src');
-    state.busy = false;
-    $('progress-wrap').classList.remove('on');
   }
 }
 
@@ -276,11 +429,6 @@ function loadVideo(video, url) {
   });
 }
 
-function setProgress(frac, label) {
-  $('progress-fill').style.width = `${Math.round(frac * 100)}%`;
-  $('progress-label').textContent = label;
-}
-
 function showError(title, detail) {
   $('error-title').textContent = title;
   $('error-detail').textContent = detail;
@@ -291,11 +439,37 @@ function hideError() { $('error-card').hidden = true; }
 
 // ---------------- Analysis rendering ----------------
 
+function selectClip(id) {
+  state.activeClipId = id;
+  renderAnalysis();
+  renderCoach();
+}
+
+function renderClipChips() {
+  const done = state.clips.filter((c) => c.status === 'done');
+  const chips = $('clip-chips');
+  chips.hidden = done.length < 2;
+  chips.innerHTML = done.map((c) => `
+    <button data-clip="${c.id}" class="${c.id === state.activeClipId ? 'active' : ''}">
+      ${c.name} · ${c.analysis.overall}
+    </button>`).join('');
+}
+
+$('clip-chips').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-clip]');
+  if (btn) selectClip(btn.dataset.clip);
+});
+
 function renderAnalysis() {
-  const a = state.analysis;
-  $('analysis-empty').hidden = true;
-  $('analysis-content').hidden = false;
-  $('playback-card').hidden = state.isDemo;
+  const clip = activeClip();
+  $('analysis-empty').hidden = !!clip;
+  $('analysis-content').hidden = !clip;
+  if (!clip) { renderClipChips(); return; }
+  const a = clip.analysis;
+
+  renderClipChips();
+  const hasReplay = !clip.demo && !!a.frames?.length;
+  $('playback-card').hidden = !hasReplay;
   $('view-badge').textContent = a.view === 'dtl' ? 'down-the-line' : 'face-on';
 
   // Score hero
@@ -303,13 +477,13 @@ function renderAnalysis() {
   const lvl = scoreLevel(a.overall);
   $('overall-level').innerHTML = `<span class="ldot"></span>${lvl.label}`;
   $('overall-level').querySelector('.ldot').style.background = LEVEL_COLORS[lvl.css];
-  const sessions = store.listSessions();
-  const prev = state.isDemo ? null : sessions[sessions.length - 2];
-  $('overall-delta').innerHTML = prev
-    ? (a.overall - prev.overall === 0
+  $('overall-delta').innerHTML = clip.demo
+    ? 'Sample swing — record yours to start tracking'
+    : clip.prevOverall == null
+      ? 'First swing on record — your baseline'
+      : a.overall === clip.prevOverall
         ? 'No change vs last swing'
-        : `<span class="${a.overall > prev.overall ? 'up' : 'down'}">${a.overall > prev.overall ? '▲' : '▼'} ${Math.abs(a.overall - prev.overall)}</span> vs last swing (${prev.overall})`)
-    : (state.isDemo ? 'Sample swing — record yours to start tracking' : 'First swing on record — your baseline');
+        : `<span class="${a.overall > clip.prevOverall ? 'up' : 'down'}">${a.overall > clip.prevOverall ? '▲' : '▼'} ${Math.abs(a.overall - clip.prevOverall)}</span> vs last swing (${clip.prevOverall})`;
 
   // Category tiles
   $('cat-grid').innerHTML = Object.entries(CATEGORY_INFO).map(([key, name]) => `
@@ -336,23 +510,23 @@ function renderAnalysis() {
   }).join('');
 
   renderRadar();
-  if (!state.isDemo) setupPlayback();
+  if (hasReplay) setupPlayback(clip);
 }
 
 function renderRadar() {
-  const a = state.analysis;
+  const clip = activeClip();
   const canvas = $('radar-canvas');
-  if (!a || !canvas.clientWidth || $('analysis-content').hidden) return;
+  if (!clip || !canvas.clientWidth || $('analysis-content').hidden) return;
   drawRadar(canvas, METRIC_KEYS.map((key) => ({
     key,
     label: RADAR_LABELS[key],
-    value: a.scores[key],
+    value: clip.analysis.scores[key],
     name: METRIC_INFO[key].name,
   })));
 }
 bindChartTip($('radar-canvas'), $('radar-tip'), (e) => ({
   title: `${e.name}: ${e.value == null ? 'n/a' : e.value}`,
-  sub: e.value == null ? 'Not measurable from this view' : metricValueLabel(e.key, state.analysis.metrics),
+  sub: e.value == null ? 'Not measurable from this view' : metricValueLabel(e.key, activeClip().analysis.metrics),
 }));
 
 // ---------------- Playback + overlay ----------------
@@ -361,21 +535,25 @@ const playVideo = $('play-video');
 const overlay = $('overlay');
 let rafId = null;
 
-function setupPlayback() {
-  playVideo.src = state.videoUrl;
-  playVideo.load();
-  playVideo.addEventListener('loadedmetadata', () => {
-    overlay.width = playVideo.videoWidth || 1280;
-    overlay.height = playVideo.videoHeight || 720;
-    $('play-shell').classList.toggle('landscape', overlay.width >= overlay.height);
-    seekPlayback(state.analysis.phases.address.t);
-  }, { once: true });
+function setupPlayback(clip) {
+  if (playVideo.src !== clip.url) {
+    playVideo.src = clip.url;
+    playVideo.load();
+    playVideo.addEventListener('loadedmetadata', () => {
+      overlay.width = playVideo.videoWidth || 1280;
+      overlay.height = playVideo.videoHeight || 720;
+      $('play-shell').classList.toggle('landscape', overlay.width >= overlay.height);
+      seekPlayback(clip.analysis.phases.address.t);
+    }, { once: true });
+  }
 
   cancelAnimationFrame(rafId);
   const loop = () => {
+    const c = activeClip();
+    if (!c) { rafId = requestAnimationFrame(loop); return; }
     drawOverlay(playVideo.currentTime);
     if (!playVideo.paused) {
-      const dur = state.analysis.phases.finish.t + 0.5;
+      const dur = c.analysis.phases.finish.t + 0.5;
       if (playVideo.currentTime >= dur) playVideo.pause();
       $('scrub').value = Math.round((playVideo.currentTime / (playVideo.duration || 1)) * 1000);
     }
@@ -398,7 +576,8 @@ $('scrub').addEventListener('input', (e) => {
 
 $('phase-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
-  if (!btn) return;
+  const clip = activeClip();
+  if (!btn || !clip) return;
   if (btn.dataset.action === 'fixes') {
     state.showFixes = !state.showFixes;
     btn.classList.toggle('active', state.showFixes);
@@ -408,8 +587,8 @@ $('phase-chips').addEventListener('click', (e) => {
   }
   if (btn.dataset.action === 'play') {
     if (playVideo.paused) {
-      if (playVideo.currentTime >= state.analysis.phases.finish.t + 0.4) {
-        playVideo.currentTime = Math.max(0, state.analysis.phases.address.t - 0.3);
+      if (playVideo.currentTime >= clip.analysis.phases.finish.t + 0.4) {
+        playVideo.currentTime = Math.max(0, clip.analysis.phases.address.t - 0.3);
       }
       playVideo.play();
     } else {
@@ -417,7 +596,7 @@ $('phase-chips').addEventListener('click', (e) => {
     }
     return;
   }
-  const phase = state.analysis?.phases[btn.dataset.phase];
+  const phase = clip.analysis.phases[btn.dataset.phase];
   if (phase) seekPlayback(phase.t);
   document.querySelectorAll('#phase-chips button[data-phase]').forEach((b) => b.classList.toggle('active', b === btn));
 });
@@ -432,8 +611,9 @@ function cssColor(v) {
 }
 
 function drawOverlay(t) {
-  const a = state.analysis;
-  if (!a) return;
+  const clip = activeClip();
+  if (!clip || !clip.analysis.frames?.length) return;
+  const a = clip.analysis;
   const ctx = overlay.getContext('2d');
   const W = overlay.width, H = overlay.height;
   ctx.clearRect(0, 0, W, H);
@@ -462,9 +642,11 @@ function nearestFrame(frames, t) {
 // ---------------- Coach rendering ----------------
 
 function renderCoach() {
-  const c = state.coaching;
-  $('coach-empty').hidden = true;
-  $('coach-content').hidden = false;
+  const clip = activeClip();
+  $('coach-empty').hidden = !!clip;
+  $('coach-content').hidden = !clip;
+  if (!clip) return;
+  const c = clip.coaching;
   $('coach-summary').textContent = c.summary;
 
   $('coach-items').innerHTML = c.items.map((item) => `
@@ -573,7 +755,7 @@ $('btn-demo').addEventListener('click', () => {
     headStability: 77, posture: 100, weightShift: 74, finish: 88,
   };
   const overall = Math.round(Object.values(scores).reduce((a, b) => a + b) / 8);
-  state.analysis = {
+  const analysis = {
     view: 'face-on', handedness: state.settings.handedness,
     metrics, scores, overall,
     categories: {
@@ -585,10 +767,20 @@ $('btn-demo').addEventListener('click', () => {
     frames: [], trajectory: [], corrections: [],
     phases: { address: { t: 0 }, top: { t: 0.72 }, impact: { t: 1.04 }, finish: { t: 1.8 } },
   };
-  state.coaching = buildCoaching(state.analysis);
-  state.isDemo = true;
-  renderAnalysis();
-  renderCoach();
+  let demo = state.clips.find((c) => c.demo);
+  if (!demo) {
+    demo = {
+      id: 'demo', demo: true, name: 'Sample swing', time: '',
+      url: null, settings: { ...state.settings, view: 'face-on' },
+      status: 'done', progress: 1, label: '',
+    };
+    state.clips.push(demo);
+  }
+  demo.analysis = analysis;
+  demo.coaching = buildCoaching(analysis);
+  demo.prevOverall = null;
+  renderClips();
+  selectClip('demo');
   showTab('analysis');
 });
 
@@ -602,7 +794,6 @@ window.addEventListener('resize', () => {
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   renderRadar();
   if (!$('progress-content').hidden) renderProgress();
-  if (state.analysis && !state.isDemo) renderAnalysis();
 });
 
 renderProgress();
