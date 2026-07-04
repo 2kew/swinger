@@ -37,11 +37,29 @@ async function create(onStatus) {
   }
 }
 
+// detectForVideo requires strictly increasing timestamps for the lifetime
+// of the landmarker. Live preview and per-video analysis share one instance,
+// so each new source starts a fresh "sequence" offset past the last stamp.
+let lastTs = 0;
+let seqBase = 0;
+
+export function newSequence() {
+  seqBase = lastTs + 1000;
+}
+
+export async function detectFrame(video, tMs, onStatus) {
+  const landmarker = await getPoseLandmarker(onStatus);
+  let ts = Math.round(seqBase + tMs);
+  if (ts <= lastTs) ts = lastTs + 1;
+  lastTs = ts;
+  return landmarker.detectForVideo(video, ts);
+}
+
 // Step through the video at a fixed rate and detect the pose per frame.
 export async function extractFrames(video, onProgress, opts = {}) {
   const fps = opts.fps || 30;
   const maxSeconds = opts.maxSeconds || 25;
-  const landmarker = await getPoseLandmarker(onProgress ? (msg) => onProgress(0, msg) : undefined);
+  await getPoseLandmarker(onProgress ? (msg) => onProgress(0, msg) : undefined);
 
   const duration = Math.min(video.duration || 0, maxSeconds);
   if (!duration || !isFinite(duration)) throw new Error('Could not read the video length.');
@@ -49,16 +67,12 @@ export async function extractFrames(video, onProgress, opts = {}) {
   const step = 1 / fps;
   const total = Math.floor(duration / step);
   const frames = [];
-  let lastTs = -1;
+  newSequence();
 
   for (let i = 0; i <= total; i++) {
     const t = Math.min(duration - 0.001, i * step);
     await seekTo(video, t);
-    // detectForVideo requires strictly increasing timestamps.
-    let ts = Math.round(t * 1000);
-    if (ts <= lastTs) ts = lastTs + 1;
-    lastTs = ts;
-    const res = landmarker.detectForVideo(video, ts);
+    const res = await detectFrame(video, t * 1000);
     frames.push({
       t,
       lm: res.landmarks?.[0] || null,

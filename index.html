@@ -40,11 +40,15 @@
 
         <div class="video-shell" id="cam-shell">
           <video id="cam-video" autoplay muted playsinline></video>
+          <canvas id="cam-overlay"></canvas>
           <div class="shell-empty" id="cam-empty">
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
             <span>Tap <strong>Record</strong> to open the camera,<br/>or upload a swing video.</span>
           </div>
           <span class="rec-timer" id="rec-timer"><span class="dot"></span><span id="rec-time">0:00</span></span>
+          <button class="flip-btn" id="btn-flip" hidden aria-label="Switch camera">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/><path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5"/><polyline points="15 2 13 5 16 6"/><polyline points="9 22 11 19 8 18"/></svg>
+          </button>
         </div>
 
         <div class="btn-row">
@@ -95,6 +99,8 @@
             <span><i style="background:var(--s1)"></i>Backswing</span>
             <span><i style="background:var(--s8)"></i>Downswing</span>
             <span><i style="background:var(--s2)"></i>Follow-through</span>
+            <span><i style="background:#ff5252"></i>Fault</span>
+            <span><i class="dash"></i>Corrected position</span>
           </div>
           <input type="range" class="scrub" id="scrub" min="0" max="1000" value="0" />
           <div class="phase-chips" id="phase-chips">
@@ -103,6 +109,7 @@
             <button data-phase="top">Top</button>
             <button data-phase="impact">Impact</button>
             <button data-phase="finish">Finish</button>
+            <button data-action="fixes" class="active" id="btn-fixes">✓ Fixes on</button>
           </div>
         </div>
 

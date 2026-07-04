@@ -57,9 +57,9 @@ function persist(sessions) {
 
 export function loadSettings() {
   try {
-    return { handedness: 'right', view: 'face-on', ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
+    return { handedness: 'right', view: 'face-on', facing: 'environment', ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
   } catch {
-    return { handedness: 'right', view: 'face-on' };
+    return { handedness: 'right', view: 'face-on', facing: 'environment' };
   }
 }
 

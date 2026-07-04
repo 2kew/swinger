@@ -1,4 +1,6 @@
-import { analyzeSwing, CONNECTIONS, METRIC_KEYS } from './swing.js';
+import { analyzeSwing, METRIC_KEYS } from './swing.js';
+import { buildCorrections } from './corrections.js';
+import { drawSkeleton, drawTrajectory, drawCorrections } from './overlay.js';
 import { buildCoaching, METRIC_INFO, CATEGORY_INFO, scoreLevel, metricValueLabel } from './coach.js';
 import { drawRadar, drawTrend, bindChartTip } from './charts.js';
 import * as store from './store.js';
@@ -17,6 +19,7 @@ const state = {
   coaching: null,
   isDemo: false,
   trendMetric: 'overall',
+  showFixes: true,
 };
 
 const RADAR_LABELS = {
@@ -54,24 +57,92 @@ for (const [id, key] of [['set-handedness', 'handedness'], ['set-view', 'view']]
 // ---------------- Capture ----------------
 
 const camVideo = $('cam-video');
+const camOverlay = $('cam-overlay');
 
 async function startCamera() {
   if (state.stream) return state.stream;
+  const facing = state.settings.facing === 'user' ? 'user' : 'environment';
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false,
   });
   state.stream = stream;
   camVideo.srcObject = stream;
   $('cam-empty').style.display = 'none';
+  $('btn-flip').hidden = false;
+  // Mirror the preview (and its skeleton) for the selfie camera, like the
+  // native camera app. The recorded video itself stays unmirrored.
+  camVideo.classList.toggle('mirror', facing === 'user');
+  camOverlay.classList.toggle('mirror', facing === 'user');
+  startLiveSkeleton();
   return stream;
 }
 
 function stopCamera() {
+  stopLiveSkeleton();
   state.stream?.getTracks().forEach((t) => t.stop());
   state.stream = null;
   camVideo.srcObject = null;
   $('cam-empty').style.display = '';
+  $('btn-flip').hidden = true;
+}
+
+$('btn-flip').addEventListener('click', async () => {
+  if (state.recorder?.state === 'recording') return;
+  state.settings.facing = state.settings.facing === 'user' ? 'environment' : 'user';
+  store.saveSettings(state.settings);
+  stopCamera();
+  try {
+    await startCamera();
+  } catch (err) {
+    showError('Camera unavailable', cameraErrorHint(err));
+  }
+});
+
+// ---- Live wire-mesh skeleton on the camera preview ----
+
+let liveRaf = null;
+let liveBusy = false;
+let liveDisabled = false;
+let lastLiveTs = 0;
+
+function startLiveSkeleton() {
+  stopLiveSkeleton();
+  let seqStarted = false;
+  const loop = async (ts) => {
+    liveRaf = requestAnimationFrame(loop);
+    if (!state.stream || liveDisabled || liveBusy || camVideo.readyState < 2) return;
+    if (ts - lastLiveTs < 66) return; // ~15fps is plenty for framing feedback
+    lastLiveTs = ts;
+    liveBusy = true;
+    try {
+      const pose = await import('./pose.js');
+      if (!seqStarted) { pose.newSequence(); seqStarted = true; }
+      const res = await pose.detectFrame(camVideo, performance.now());
+      if (!state.stream) return;
+      if (camOverlay.width !== camVideo.videoWidth) {
+        camOverlay.width = camVideo.videoWidth || 1280;
+        camOverlay.height = camVideo.videoHeight || 720;
+      }
+      const ctx = camOverlay.getContext('2d');
+      ctx.clearRect(0, 0, camOverlay.width, camOverlay.height);
+      const lm = res.landmarks?.[0];
+      if (lm) drawSkeleton(ctx, lm, camOverlay.width, camOverlay.height);
+    } catch (err) {
+      // Model unavailable (e.g. offline) — recording still works without it.
+      liveDisabled = true;
+      console.warn('Live skeleton disabled:', err);
+    } finally {
+      liveBusy = false;
+    }
+  };
+  liveRaf = requestAnimationFrame(loop);
+}
+
+function stopLiveSkeleton() {
+  cancelAnimationFrame(liveRaf);
+  liveRaf = null;
+  camOverlay.getContext('2d').clearRect(0, 0, camOverlay.width, camOverlay.height);
 }
 
 function pickMimeType() {
@@ -120,6 +191,7 @@ function setRecordingUI(on) {
   btn.classList.toggle('recording', on);
   btn.classList.toggle('primary', !on);
   $('rec-timer').classList.toggle('on', on);
+  $('btn-flip').hidden = on || !state.stream;
   clearInterval(state.recTimer);
   if (on) {
     const start = Date.now();
@@ -142,6 +214,7 @@ $('file-input').addEventListener('change', (e) => {
 
 async function analyzeBlob(blob) {
   if (state.busy) return;
+  stopCamera(); // the analysis loop and live preview can't share the detector
   state.busy = true;
   setProgress(0, 'Loading video…');
   $('progress-wrap').classList.add('on');
@@ -165,6 +238,7 @@ async function analyzeBlob(blob) {
     if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
     state.videoUrl = url;
     state.analysis = analysis;
+    analysis.corrections = buildCorrections(analysis);
     state.coaching = buildCoaching(analysis);
     state.isDemo = false;
     store.saveSession(analysis);
@@ -325,6 +399,13 @@ $('scrub').addEventListener('input', (e) => {
 $('phase-chips').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  if (btn.dataset.action === 'fixes') {
+    state.showFixes = !state.showFixes;
+    btn.classList.toggle('active', state.showFixes);
+    btn.textContent = state.showFixes ? '✓ Fixes on' : 'Fixes off';
+    drawOverlay(playVideo.currentTime);
+    return;
+  }
   if (btn.dataset.action === 'play') {
     if (playVideo.paused) {
       if (playVideo.currentTime >= state.analysis.phases.finish.t + 0.4) {
@@ -359,47 +440,13 @@ function drawOverlay(t) {
 
   // Trajectory up to current time, segmented by phase.
   const segColors = { back: cssColor('var(--s1)'), down: cssColor('var(--s8)'), through: cssColor('var(--s2)') };
-  const pts = a.trajectory.filter((p) => p.t <= t + 0.02);
-  for (let pass = 0; pass < 2; pass++) {
-    let prev = null;
-    for (const p of pts) {
-      if (prev) {
-        ctx.beginPath();
-        ctx.moveTo(prev.x * W, prev.y * H);
-        ctx.lineTo(p.x * W, p.y * H);
-        ctx.strokeStyle = pass === 0 ? 'rgba(0,0,0,0.4)' : segColors[p.seg];
-        ctx.lineWidth = pass === 0 ? 5 : 2.5;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-      }
-      prev = p;
-    }
-  }
+  drawTrajectory(ctx, a.trajectory.filter((p) => p.t <= t + 0.02), segColors, W, H);
 
-  // Skeleton for the nearest analyzed frame.
+  // Skeleton for the nearest analyzed frame, then any active corrections.
   const frame = nearestFrame(a.frames, t);
   if (frame?.lm) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round';
-    for (const [i, j] of CONNECTIONS) {
-      const p = frame.lm[i], q = frame.lm[j];
-      if ((p.visibility ?? 1) < 0.4 || (q.visibility ?? 1) < 0.4) continue;
-      ctx.beginPath();
-      ctx.moveTo(p.x * W, p.y * H);
-      ctx.lineTo(q.x * W, q.y * H);
-      ctx.stroke();
-    }
-    ctx.fillStyle = 'rgba(255,255,255,0.95)';
-    for (const [i, j] of CONNECTIONS) {
-      for (const idx of [i, j]) {
-        const p = frame.lm[idx];
-        if ((p.visibility ?? 1) < 0.4) continue;
-        ctx.beginPath();
-        ctx.arc(p.x * W, p.y * H, 3.5, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-    }
+    drawSkeleton(ctx, frame.lm, W, H);
+    if (state.showFixes) drawCorrections(ctx, frame.lm, a.corrections || [], W, H, t);
   }
 }
 
@@ -535,7 +582,7 @@ $('btn-demo').addEventListener('click', () => {
       stability: Math.round((scores.headStability + scores.posture) / 2),
       delivery: Math.round((scores.armExtension + scores.weightShift + scores.finish) / 3),
     },
-    frames: [], trajectory: [],
+    frames: [], trajectory: [], corrections: [],
     phases: { address: { t: 0 }, top: { t: 0.72 }, impact: { t: 1.04 }, finish: { t: 1.8 } },
   };
   state.coaching = buildCoaching(state.analysis);
