@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)" />
+  <title>Swinger — AI Golf Swing Coach</title>
+  <meta name="description" content="Analyze your golf swing with your phone camera: trajectory, body positions, granular coaching and a multi-metric score." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%232a78d6'/%3E%3Ccircle cx='38' cy='40' r='16' fill='%23fff'/%3E%3Cpath d='M52 52 L78 82' stroke='%23fff' stroke-width='9' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>Swinger</h1>
+      <div class="tagline">Your phone-camera golf swing coach</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ SWING (capture) ============ -->
+    <section id="panel-record" class="tab-panel active">
+      <div class="card">
+        <div class="select-row">
+          <label>I swing
+            <select id="set-handedness">
+              <option value="right">Right-handed</option>
+              <option value="left">Left-handed</option>
+            </select>
+          </label>
+          <label>Camera view
+            <select id="set-view">
+              <option value="face-on">Face-on (facing me)</option>
+              <option value="dtl">Down-the-line (behind)</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="video-shell" id="cam-shell">
+          <video id="cam-video" autoplay muted playsinline></video>
+          <div class="shell-empty" id="cam-empty">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            <span>Tap <strong>Record</strong> to open the camera,<br/>or upload a swing video.</span>
+          </div>
+          <span class="rec-timer" id="rec-timer"><span class="dot"></span><span id="rec-time">0:00</span></span>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn primary" id="btn-record">● Record</button>
+          <button class="btn" id="btn-upload">Upload video</button>
+          <input type="file" id="file-input" accept="video/*" hidden />
+        </div>
+
+        <div class="progress-wrap" id="progress-wrap">
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <div class="progress-label" id="progress-label">Preparing…</div>
+        </div>
+      </div>
+
+      <div class="card error-card" id="error-card" hidden>
+        <h2>⚠️ <span id="error-title">Analysis failed</span></h2>
+        <p class="sub" id="error-detail"></p>
+      </div>
+
+      <div class="card">
+        <h2>Get a clean reading</h2>
+        <ul class="tips">
+          <li>Prop the phone at waist height, 3–4 m (10–13 ft) away</li>
+          <li>Keep your <strong>whole body</strong> in frame, head to feet, for the entire swing</li>
+          <li>Face-on view unlocks all 8 metrics; down-the-line works too</li>
+          <li>Good light, one person in frame, phone held still</li>
+          <li>One full swing per video, up to ~20 seconds</li>
+        </ul>
+        <button class="link-btn" id="btn-demo">See a sample analysis →</button>
+        <p class="fine">Video is analyzed on your phone and never uploaded anywhere.</p>
+      </div>
+    </section>
+
+    <!-- ============ ANALYSIS ============ -->
+    <section id="panel-analysis" class="tab-panel">
+      <div class="empty-state" id="analysis-empty">
+        <p>No swing analyzed yet.<br/>Record or upload one in the <strong>Swing</strong> tab.</p>
+      </div>
+
+      <div id="analysis-content" hidden>
+        <div class="card" id="playback-card">
+          <h2>Swing replay <span class="badge" id="view-badge"></span></h2>
+          <div class="video-shell landscape" id="play-shell">
+            <video id="play-video" muted playsinline></video>
+            <canvas id="overlay"></canvas>
+          </div>
+          <div class="traj-legend">
+            <span><i style="background:var(--s1)"></i>Backswing</span>
+            <span><i style="background:var(--s8)"></i>Downswing</span>
+            <span><i style="background:var(--s2)"></i>Follow-through</span>
+          </div>
+          <input type="range" class="scrub" id="scrub" min="0" max="1000" value="0" />
+          <div class="phase-chips" id="phase-chips">
+            <button data-action="play">▶ Play</button>
+            <button data-phase="address">Address</button>
+            <button data-phase="top">Top</button>
+            <button data-phase="impact">Impact</button>
+            <button data-phase="finish">Finish</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Swing score</h2>
+          <div class="hero-score">
+            <span class="num" id="overall-score">–</span>
+            <span class="of">/ 100</span>
+            <span class="level-pill" id="overall-level"></span>
+          </div>
+          <div class="hero-delta" id="overall-delta"></div>
+          <div class="cat-grid" id="cat-grid"></div>
+        </div>
+
+        <div class="card">
+          <h2>Metric breakdown</h2>
+          <div class="chart-box">
+            <canvas id="radar-canvas"></canvas>
+            <div class="chart-tip" id="radar-tip"></div>
+          </div>
+          <div class="metric-list" id="metric-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ COACH ============ -->
+    <section id="panel-coach" class="tab-panel">
+      <div class="empty-state" id="coach-empty">
+        <p>Coaching appears here after you analyze a swing.</p>
+      </div>
+      <div id="coach-content" hidden>
+        <div class="card">
+          <h2>Coach's read</h2>
+          <p class="coach-summary" id="coach-summary"></p>
+        </div>
+        <div class="card">
+          <h2>Lesson plan</h2>
+          <div id="coach-items"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PROGRESS ============ -->
+    <section id="panel-progress" class="tab-panel">
+      <div class="empty-state" id="progress-empty">
+        <p>Analyze a few swings and your improvement<br/>trends will show up here.</p>
+      </div>
+      <div id="progress-content" hidden>
+        <div class="card">
+          <h2>Trend</h2>
+          <div class="metric-chips" id="trend-chips"></div>
+          <div class="chart-box">
+            <canvas id="trend-canvas"></canvas>
+            <div class="chart-tip" id="trend-tip"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Sessions</h2>
+          <div id="session-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-tab="record" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      Swing
+    </button>
+    <button data-tab="analysis">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 21 8 21 16 12 22 3 16 3 8"/><circle cx="12" cy="12" r="3"/></svg>
+      Analysis
+    </button>
+    <button data-tab="coach">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Coach
+    </button>
+    <button data-tab="progress">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+      Progress
+    </button>
+  </nav>
+
+  <video id="proc-video" muted playsinline preload="auto" style="position:fixed;left:-9999px;top:0;width:320px;"></video>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

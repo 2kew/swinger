@@ -1,0 +1,17 @@
+{
+  "name": "Swinger — AI Golf Swing Coach",
+  "short_name": "Swinger",
+  "description": "Analyze your golf swing with your phone camera: trajectory, body positions, granular coaching and multi-metric scoring.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0d0d0d",
+  "theme_color": "#2a78d6",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232a78d6'/%3E%3Ccircle cx='38' cy='40' r='16' fill='%23fff'/%3E%3Cpath d='M52 52 L78 82' stroke='%23fff' stroke-width='9' stroke-linecap='round'/%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
